@@ -1,0 +1,8 @@
+model_path: 'OpenLLM-Ro/RoLlama3.1-8b-Instruct-DPO-2024-10-09'
+quant_path: 'llama3.1-8b-instruct-dpo-awq'
+quant_config: { 
+  "zero_point": True, 
+  "q_group_size": 128, 
+  "w_bit": 4, 
+  "version": "GEMM" 
+}
