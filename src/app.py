@@ -62,7 +62,7 @@ class vLLMClient:
                 return [model["id"] for model in models.get("data", [])]
             return []
         except Exception as e:
-            st.error(f"Không thể kết nối đến vLLM server: {e}")
+            st.error(f"Can't connected to vLLM server: {e}")
             return []
     
     def chat_completion(self, messages: List[Dict], model: str, **kwargs) -> tuple:
@@ -96,7 +96,7 @@ class vLLMClient:
                 return error_msg, 0
                 
         except Exception as e:
-            error_msg = f"Lỗi kết nối: {str(e)}"
+            error_msg = f"Error connected: {str(e)}"
             return error_msg, 0
     
     def stream_chat_completion(self, messages: List[Dict], model: str, **kwargs):
@@ -158,17 +158,17 @@ def init_session_state():
         st.session_state.connection_status = False
 
 def auto_connect():
-    """Tự động kết nối đến port 8000"""
+    """Automatically connect to port 8000"""
     if not st.session_state.connection_status:
-        with st.spinner("Đang tự động kết nối đến localhost:8000..."):
+        with st.spinner("Connecting localhost:8000..."):
             st.session_state.vllm_client = vLLMClient("http://localhost:8000")
             st.session_state.models = st.session_state.vllm_client.get_models()
             if st.session_state.models:
                 st.session_state.current_model = st.session_state.models[0]  # Chọn model đầu tiên
                 st.session_state.connection_status = True
-                st.success(f"Kết nối thành công! Sử dụng model: {st.session_state.current_model}")
+                st.success(f"Connect successfullu, Model: {st.session_state.current_model}")
             else:
-                st.error("Không thể kết nối hoặc không tìm thấy models")
+                st.error("Can't connect or find model")
 
 def main():
     init_session_state()
@@ -181,22 +181,22 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.header("⚙️ Cấu hình")
+        st.header("⚙️ Config")
         
         # Thống kê
-        st.subheader("📊 Thống kê")
+        st.subheader("📊 Statistic")
         
         # Đếm số turn (mỗi cặp user-assistant = 1 turn)
         user_messages = [msg for msg in st.session_state.messages if msg["role"] == "user"]
         assistant_messages = [msg for msg in st.session_state.messages if msg["role"] == "assistant"]
         turns = min(len(user_messages), len(assistant_messages))
         
-        st.metric("Số turn", turns)
-        st.metric("Tổng tin nhắn", len(st.session_state.messages))
-        st.metric("Tokens đã tạo", st.session_state.total_tokens_generated)
+        st.metric("Count turn", turns)
+        st.metric("Total message", len(st.session_state.messages))
+        st.metric("Tokens is created", st.session_state.total_tokens_generated)
         
         if st.session_state.current_model:
-            st.metric("Model hiện tại", st.session_state.current_model)
+            st.metric("Current model", st.session_state.current_model)
         
         st.markdown("---")
         
@@ -208,22 +208,22 @@ def main():
             help="URL của vLLM server"
         )
         
-        if st.button("🔄 Kết nối lại"):
-            with st.spinner("Đang kết nối..."):
+        if st.button("🔄 Reconnect"):
+            with st.spinner("Connecting..."):
                 st.session_state.vllm_client = vLLMClient(server_url)
                 st.session_state.models = st.session_state.vllm_client.get_models()
                 if st.session_state.models:
                     st.session_state.current_model = st.session_state.models[0]
                     st.session_state.connection_status = True
-                    st.success(f"Kết nối thành công! Model: {st.session_state.current_model}")
+                    st.success(f"Connected successfully, Model: {st.session_state.current_model}")
                 else:
                     st.session_state.connection_status = False
-                    st.error("Không thể kết nối")
+                    st.error("Connected fail")
         
         # Chọn model nếu có nhiều model
         if len(st.session_state.models) > 1:
             st.session_state.current_model = st.selectbox(
-                "Chọn Model",
+                "Select Model",
                 st.session_state.models,
                 index=st.session_state.models.index(st.session_state.current_model) if st.session_state.current_model in st.session_state.models else 0
             )
@@ -246,12 +246,12 @@ def main():
         st.subheader("System Prompt")
         system_prompt = st.text_area(
             "System Prompt",
-            value="Bạn là một AI assistant hữu ích, thông minh và thân thiện. Hãy trả lời câu hỏi một cách chi tiết và chính xác.",
+            value="you are a useful, intelligent, kind AI assistant. Let's answer in detail and correctly.",
             height=100
         )
         
         # Clear chat
-        if st.button("🗑️ Xóa lịch sử chat"):
+        if st.button("🗑️ Delete message history"):
             st.session_state.messages = []
             st.session_state.total_tokens_generated = 0
             st.rerun()
@@ -268,7 +268,7 @@ def main():
                 st.write(message["content"])
     
     # Input cho tin nhắn mới
-    user_input = st.chat_input("Nhập tin nhắn của bạn...")
+    user_input = st.chat_input("Input message...")
     
     if user_input and st.session_state.connection_status and st.session_state.current_model:
         # Thêm tin nhắn user vào history
@@ -310,7 +310,7 @@ def main():
                 token_count = st.session_state.vllm_client.count_tokens(full_response)
             else:
                 # Non-streaming response
-                with st.spinner("Đang tạo phản hồi..."):
+                with st.spinner("Responing..."):
                     response, token_count = st.session_state.vllm_client.chat_completion(
                         api_messages,
                         st.session_state.current_model,
@@ -328,7 +328,7 @@ def main():
         st.rerun()
     
     elif user_input and not st.session_state.connection_status:
-        st.error("Chưa kết nối đến server! Vui lòng kiểm tra kết nối.")
+        st.error("Not connect to Server! Please check the connection.")
 
 if __name__ == "__main__":
     main()
