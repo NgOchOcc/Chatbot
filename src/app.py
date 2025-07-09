@@ -1,13 +1,13 @@
 import streamlit as st
 import requests
 import json
-from typing import List, Dict
+from typing import List, Dict, Generator
 import time
 import tiktoken
 
 # Cấu hình trang
 st.set_page_config(
-    page_title="vLLM Chatbot",
+    page_title="Ollama Chatbot",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -35,8 +35,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-class vLLMClient:
-    def __init__(self, base_url: str = "http://localhost:8000"):
+class OllamaClient:
+    def __init__(self, base_url: str = "http://localhost:11434"):
         self.base_url = base_url
         self.headers = {"Content-Type": "application/json"}
         # Khởi tạo tokenizer để đếm token
@@ -54,41 +54,52 @@ class vLLMClient:
             return len(text) // 4
     
     def get_models(self) -> List[str]:
-        """Lấy danh sách models có sẵn"""
+        """Lấy danh sách models có sẵn từ Ollama"""
         try:
-            response = requests.get(f"{self.base_url}/v1/models", headers=self.headers)
+            response = requests.get(f"{self.base_url}/api/tags", headers=self.headers)
             if response.status_code == 200:
                 models = response.json()
-                return [model["id"] for model in models.get("data", [])]
+                return [model["name"] for model in models.get("models", [])]
             return []
         except Exception as e:
-            st.error(f"Can't connected to vLLM server: {e}")
+            st.error(f"Không thể kết nối tới Ollama server: {e}")
             return []
     
     def chat_completion(self, messages: List[Dict], model: str, **kwargs) -> tuple:
-        """Gửi yêu cầu chat completion và trả về (response, token_count)"""
+        """Gửi yêu cầu chat completion tới Ollama và trả về (response, token_count)"""
+        
+        # Chuyển đổi messages thành format của Ollama
+        ollama_messages = []
+        for msg in messages:
+            ollama_messages.append({
+                "role": msg["role"],
+                "content": msg["content"]
+            })
+        
         payload = {
             "model": model,
-            "messages": messages,
-            "temperature": kwargs.get("temperature", 0.7),
-            "max_tokens": kwargs.get("max_tokens", 1000),
-            "top_p": kwargs.get("top_p", 0.9),
-            "frequency_penalty": kwargs.get("frequency_penalty", 0.0),
-            "presence_penalty": kwargs.get("presence_penalty", 0.0),
-            "stream": kwargs.get("stream", False)
+            "messages": ollama_messages,
+            "stream": False,
+            "options": {
+                "temperature": kwargs.get("temperature", 0.7),
+                "num_predict": kwargs.get("max_tokens", 1000),
+                "top_p": kwargs.get("top_p", 0.9),
+                "frequency_penalty": kwargs.get("frequency_penalty", 0.0),
+                "presence_penalty": kwargs.get("presence_penalty", 0.0),
+            }
         }
         
         try:
             response = requests.post(
-                f"{self.base_url}/v1/chat/completions",
+                f"{self.base_url}/api/chat",
                 headers=self.headers,
                 json=payload,
-                timeout=60
+                timeout=120
             )
             
             if response.status_code == 200:
                 result = response.json()
-                content = result["choices"][0]["message"]["content"]
+                content = result["message"]["content"]
                 token_count = self.count_tokens(content)
                 return content, token_count
             else:
@@ -96,48 +107,89 @@ class vLLMClient:
                 return error_msg, 0
                 
         except Exception as e:
-            error_msg = f"Error connected: {str(e)}"
+            error_msg = f"Lỗi kết nối: {str(e)}"
             return error_msg, 0
     
-    def stream_chat_completion(self, messages: List[Dict], model: str, **kwargs):
-        """Streaming chat completion"""
+    def stream_chat_completion(self, messages: List[Dict], model: str, **kwargs) -> Generator[str, None, None]:
+        """Streaming chat completion với Ollama"""
+        
+        # Chuyển đổi messages thành format của Ollama
+        ollama_messages = []
+        for msg in messages:
+            ollama_messages.append({
+                "role": msg["role"],
+                "content": msg["content"]
+            })
+        
         payload = {
             "model": model,
-            "messages": messages,
-            "temperature": kwargs.get("temperature", 0.7),
-            "max_tokens": kwargs.get("max_tokens", 1000),
-            "top_p": kwargs.get("top_p", 0.9),
-            "frequency_penalty": kwargs.get("frequency_penalty", 0.0),
-            "presence_penalty": kwargs.get("presence_penalty", 0.0),
-            "stream": True
+            "messages": ollama_messages,
+            "stream": True,
+            "options": {
+                "temperature": kwargs.get("temperature", 0.7),
+                "num_predict": kwargs.get("max_tokens", 1000),
+                "top_p": kwargs.get("top_p", 0.9),
+                "frequency_penalty": kwargs.get("frequency_penalty", 0.0),
+                "presence_penalty": kwargs.get("presence_penalty", 0.0),
+            }
         }
         
         try:
             response = requests.post(
-                f"{self.base_url}/v1/chat/completions",
+                f"{self.base_url}/api/chat",
                 headers=self.headers,
                 json=payload,
                 stream=True,
-                timeout=60
+                timeout=120
             )
             
             if response.status_code == 200:
                 for line in response.iter_lines():
                     if line:
-                        line = line.decode('utf-8')
-                        if line.startswith('data: '):
-                            data = line[6:]  # Bỏ "data: "
-                            if data.strip() == '[DONE]':
+                        try:
+                            json_data = json.loads(line.decode('utf-8'))
+                            if not json_data.get("done", False):
+                                content = json_data.get("message", {}).get("content", "")
+                                if content:
+                                    yield content
+                            else:
                                 break
-                            try:
-                                json_data = json.loads(data)
-                                delta = json_data["choices"][0]["delta"]
-                                if "content" in delta:
-                                    yield delta["content"]
-                            except json.JSONDecodeError:
-                                continue
+                        except json.JSONDecodeError:
+                            continue
             else:
                 yield f"Lỗi API: {response.status_code}"
+                
+        except Exception as e:
+            yield f"Lỗi kết nối: {str(e)}"
+
+    def pull_model(self, model_name: str) -> Generator[str, None, None]:
+        """Pull model từ Ollama registry"""
+        payload = {
+            "name": model_name,
+            "stream": True
+        }
+        
+        try:
+            response = requests.post(
+                f"{self.base_url}/api/pull",
+                headers=self.headers,
+                json=payload,
+                stream=True,
+                timeout=300
+            )
+            
+            if response.status_code == 200:
+                for line in response.iter_lines():
+                    if line:
+                        try:
+                            json_data = json.loads(line.decode('utf-8'))
+                            status = json_data.get("status", "")
+                            if status:
+                                yield status
+                        except json.JSONDecodeError:
+                            continue
+            else:
+                yield f"Lỗi khi pull model: {response.status_code}"
                 
         except Exception as e:
             yield f"Lỗi kết nối: {str(e)}"
@@ -146,8 +198,8 @@ def init_session_state():
     """Khởi tạo session state"""
     if "messages" not in st.session_state:
         st.session_state.messages = []
-    if "vllm_client" not in st.session_state:
-        st.session_state.vllm_client = None
+    if "ollama_client" not in st.session_state:
+        st.session_state.ollama_client = None
     if "models" not in st.session_state:
         st.session_state.models = []
     if "current_model" not in st.session_state:
@@ -158,22 +210,22 @@ def init_session_state():
         st.session_state.connection_status = False
 
 def auto_connect():
-    """Automatically connect to port 8000"""
+    """Tự động kết nối tới Ollama tại port 11434"""
     if not st.session_state.connection_status:
-        with st.spinner("Connecting localhost:8000..."):
-            st.session_state.vllm_client = vLLMClient("http://localhost:8000")
-            st.session_state.models = st.session_state.vllm_client.get_models()
+        with st.spinner("Đang kết nối tới Ollama localhost:11434..."):
+            st.session_state.ollama_client = OllamaClient("http://localhost:11434")
+            st.session_state.models = st.session_state.ollama_client.get_models()
             if st.session_state.models:
                 st.session_state.current_model = st.session_state.models[0]  # Chọn model đầu tiên
                 st.session_state.connection_status = True
-                st.success(f"Connect successfullu, Model: {st.session_state.current_model}")
+                st.success(f"Kết nối thành công! Model hiện tại: {st.session_state.current_model}")
             else:
-                st.error("Can't connect or find model")
+                st.warning("Kết nối thành công nhưng không tìm thấy model nào. Vui lòng pull model trước!")
 
 def main():
     init_session_state()
     
-    st.title("🤖 vLLM Chatbot")
+    st.title("🤖 Ollama Chatbot")
     st.markdown("---")
     
     # Tự động kết nối khi khởi động
@@ -181,49 +233,72 @@ def main():
     
     # Sidebar
     with st.sidebar:
-        st.header("⚙️ Config")
+        st.header("⚙️ Cấu hình")
         
         # Thống kê
-        st.subheader("📊 Statistic")
+        st.subheader("📊 Thống kê")
         
         # Đếm số turn (mỗi cặp user-assistant = 1 turn)
         user_messages = [msg for msg in st.session_state.messages if msg["role"] == "user"]
         assistant_messages = [msg for msg in st.session_state.messages if msg["role"] == "assistant"]
         turns = min(len(user_messages), len(assistant_messages))
         
-        st.metric("Count turn", turns)
-        st.metric("Total message", len(st.session_state.messages))
-        st.metric("Tokens is created", st.session_state.total_tokens_generated)
+        st.metric("Số lượt hội thoại", turns)
+        st.metric("Tổng tin nhắn", len(st.session_state.messages))
+        st.metric("Token đã tạo", st.session_state.total_tokens_generated)
         
         if st.session_state.current_model:
-            st.metric("Current model", st.session_state.current_model)
+            st.metric("Model hiện tại", st.session_state.current_model)
         
         st.markdown("---")
         
-        # Kết nối thủ công nếu cần
-        st.subheader("Server Configuration")
+        # Cấu hình server
+        st.subheader("🔧 Cấu hình Server")
         server_url = st.text_input(
-            "vLLM Server URL",
-            value="http://localhost:8000",
-            help="URL của vLLM server"
+            "Ollama Server URL",
+            value="http://localhost:11434",
+            help="URL của Ollama server"
         )
         
-        if st.button("🔄 Reconnect"):
-            with st.spinner("Connecting..."):
-                st.session_state.vllm_client = vLLMClient(server_url)
-                st.session_state.models = st.session_state.vllm_client.get_models()
-                if st.session_state.models:
-                    st.session_state.current_model = st.session_state.models[0]
-                    st.session_state.connection_status = True
-                    st.success(f"Connected successfully, Model: {st.session_state.current_model}")
-                else:
-                    st.session_state.connection_status = False
-                    st.error("Connected fail")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Kết nối lại"):
+                with st.spinner("Đang kết nối..."):
+                    st.session_state.ollama_client = OllamaClient(server_url)
+                    st.session_state.models = st.session_state.ollama_client.get_models()
+                    if st.session_state.models:
+                        st.session_state.current_model = st.session_state.models[0]
+                        st.session_state.connection_status = True
+                        st.success(f"Kết nối thành công! Model: {st.session_state.current_model}")
+                    else:
+                        st.session_state.connection_status = False
+                        st.error("Kết nối thất bại hoặc không có model")
         
-        # Chọn model nếu có nhiều model
-        if len(st.session_state.models) > 1:
+        with col2:
+            if st.button("🔄 Refresh Models"):
+                if st.session_state.ollama_client:
+                    st.session_state.models = st.session_state.ollama_client.get_models()
+                    if st.session_state.models:
+                        st.success(f"Đã tải {len(st.session_state.models)} models")
+                    else:
+                        st.warning("Không tìm thấy model nào")
+        
+        # Pull model mới
+        st.subheader("📥 Pull Model")
+        model_to_pull = st.text_input("Tên model cần pull", placeholder="ví dụ: llama3.2:latest")
+        if st.button("Pull Model") and model_to_pull:
+            with st.spinner("Đang pull model..."):
+                status_placeholder = st.empty()
+                for status in st.session_state.ollama_client.pull_model(model_to_pull):
+                    status_placeholder.text(f"Status: {status}")
+                st.success("Pull model hoàn tất!")
+                # Refresh models list
+                st.session_state.models = st.session_state.ollama_client.get_models()
+        
+        # Chọn model
+        if st.session_state.models:
             st.session_state.current_model = st.selectbox(
-                "Select Model",
+                "Chọn Model",
                 st.session_state.models,
                 index=st.session_state.models.index(st.session_state.current_model) if st.session_state.current_model in st.session_state.models else 0
             )
@@ -231,7 +306,7 @@ def main():
         st.markdown("---")
         
         # Cấu hình generation
-        st.subheader("Generation Settings")
+        st.subheader("🎛️ Cài đặt Generation")
         temperature = st.slider("Temperature", 0.0, 2.0, 0.7, 0.1)
         max_tokens = st.slider("Max Tokens", 100, 4000, 1000, 100)
         top_p = st.slider("Top P", 0.0, 1.0, 0.9, 0.1)
@@ -243,23 +318,29 @@ def main():
         st.markdown("---")
         
         # System prompt
-        st.subheader("System Prompt")
+        st.subheader("💬 System Prompt")
         system_prompt = st.text_area(
             "System Prompt",
-            value="you are a useful, intelligent, kind AI assistant. Let's answer in detail and correctly.",
+            value="Bạn là một AI assistant thông minh, hữu ích và thân thiện. Hãy trả lời một cách chi tiết và chính xác.",
             height=100
         )
         
         # Clear chat
-        if st.button("🗑️ Delete message history"):
+        if st.button("🗑️ Xóa lịch sử chat"):
             st.session_state.messages = []
             st.session_state.total_tokens_generated = 0
             st.rerun()
         
+        # Model info
+        if st.session_state.current_model:
+            st.markdown("---")
+            st.subheader("ℹ️ Model Info")
+            st.text(f"Model: {st.session_state.current_model}")
+            st.text(f"Server: {server_url}")
     
     # Main chat interface
     # Hiển thị messages
-    for i, message in enumerate(st.session_state.messages):
+    for message in st.session_state.messages:
         if message["role"] == "user":
             with st.chat_message("user"):
                 st.write(message["content"])
@@ -268,7 +349,7 @@ def main():
                 st.write(message["content"])
     
     # Input cho tin nhắn mới
-    user_input = st.chat_input("Input message...")
+    user_input = st.chat_input("Nhập tin nhắn...")
     
     if user_input and st.session_state.connection_status and st.session_state.current_model:
         # Thêm tin nhắn user vào history
@@ -292,7 +373,7 @@ def main():
                 response_placeholder = st.empty()
                 full_response = ""
                 
-                for chunk in st.session_state.vllm_client.stream_chat_completion(
+                for chunk in st.session_state.ollama_client.stream_chat_completion(
                     api_messages,
                     st.session_state.current_model,
                     temperature=temperature,
@@ -307,11 +388,11 @@ def main():
                 response_placeholder.write(full_response)
                 response = full_response
                 # Đếm token cho streaming response
-                token_count = st.session_state.vllm_client.count_tokens(full_response)
+                token_count = st.session_state.ollama_client.count_tokens(full_response)
             else:
                 # Non-streaming response
-                with st.spinner("Responing..."):
-                    response, token_count = st.session_state.vllm_client.chat_completion(
+                with st.spinner("Đang phản hồi..."):
+                    response, token_count = st.session_state.ollama_client.chat_completion(
                         api_messages,
                         st.session_state.current_model,
                         temperature=temperature,
@@ -328,7 +409,10 @@ def main():
         st.rerun()
     
     elif user_input and not st.session_state.connection_status:
-        st.error("Not connect to Server! Please check the connection.")
+        st.error("Chưa kết nối tới Ollama Server! Vui lòng kiểm tra kết nối.")
+    
+    elif user_input and not st.session_state.current_model:
+        st.error("Chưa chọn model! Vui lòng pull model hoặc chọn model có sẵn.")
 
 if __name__ == "__main__":
     main()
